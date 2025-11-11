@@ -527,7 +527,7 @@ def render_pdf_table(story, section_config, available_width, styles, theme):
         ('GRID', (0, 0), (-1, -1), 1, colors.black),
         ('FONT SIZE', (0, 1), (-1, -1), 11),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('WORDWRAP', (0, 0), (-1, -1), True),
+        #('WORDWRAP', (0, 0), (-1, -1), True),
     ]
 
     # Apply alternating row colors to all rows
