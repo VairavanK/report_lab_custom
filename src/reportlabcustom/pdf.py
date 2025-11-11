@@ -564,8 +564,18 @@ def render_pdf_table_grouped(story, section_config, available_width, styles, the
     if df.empty or groupby_col not in df.columns:
         return
     
-    # Get category order if provided, else use natural order
-    category_order = section_config.get('category_order', sorted(df[groupby_col].unique()))
+    # Get category order, appending any undefined categories with warning
+    if 'category_order' in section_config:
+        category_order = list(section_config['category_order'])
+        all_categories = set(df[groupby_col].unique())
+        specified_categories = set(category_order)
+        missing_categories = all_categories - specified_categories
+        if missing_categories:
+            missing_list = list(missing_categories)  # Natural data order
+            print(f"⚠️  {groupby_col} groups not in category_order (appending at end): {missing_list}")
+            category_order.extend(missing_list)
+    else:
+        category_order = sorted(df[groupby_col].unique())
     drop_columns = section_config.get('drop_columns', [])
     
     section_colors = section_config.get('colors', theme)
