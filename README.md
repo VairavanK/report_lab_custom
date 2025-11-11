@@ -1,399 +1,869 @@
-🧠 Report System — LLM-Friendly Spec (Reality-Accurate, v2.4)
+# 🧠 Report System — LLM-Friendly Spec (Reality-Accurate, v2.6)
 
-Last updated: 10 Nov 2025
+**Last updated:** 11 Nov 2025
+**Authority:** Matches the shipped code in `pdf.py`, `docx.py`, `utils.py`, `theme.py`.
+**Focus:** PDF first; DOCX kept lean by design.
+**Note:** JSON below shows *shapes only*—at runtime pass real Python objects (e.g., **pandas.DataFrame**).
 
-A precise, machine-oriented spec for generating PDF or DOCX reports from a sectioned template. Reflects the current implementation and the SVG background feature.
+---
 
-0) Package Layout (import paths)
-reportlabcustom/
-├─ README.md
-├─ pyproject.toml
-└─ src/
-   └─ reportlabcustom/
-      ├─ __init__.py            # public API (Option A: re-exports)
-      ├─ pdf.py                 # PDF renderer + generate_report switch
-      ├─ docx.py                # DOCX renderer
-      ├─ utils.py               # shared helpers (formatting, df prep, rules, svg loader)
-      └─ theme.py               # report_colors (visual tokens)
+## 🔥 Critical Quick Reference
 
+### Copy-Paste Starter (PDF)
 
-Import in user code:
-
+```python
 from reportlabcustom import generate_report, report_colors
+import pandas as pd
 
-1) Public API
-1.1 generate_report(report_sections, output_filename='report.pdf', format='pdf', colors=None, header_config=None, footer_config=None, background_svg=None)
+# 1) Your data
+df = pd.DataFrame([
+    {"Item": "A", "Qty": 10, "Price": 2.5, "Status": "Active"},
+    {"Item": "B", "Qty": 5,  "Price": 4.2, "Status": "Pending"},
+])
 
-Inputs
-
-report_sections: List[Section] — ordered; see §3.
-
-output_filename: str — required; full or relative path.
-
-format: 'pdf' | 'docx' — default 'pdf'.
-
-colors: Colors | None — optional report-level theme override (see §4). Cascade: section.colors → colors → report_colors.
-
-header_config: HeaderConfig | None — optional PDF header; see §6.2.
-
-footer_config: FooterConfig | None — optional PDF footer; see §6.1.
-
-background_svg: str | None — NEW; PDF-only page background; see §2.2 and SVG section below.
-
-Output
-
-str — output file path.
-
-Runtime notes
-
-For table sections, pass actual pandas.DataFrame objects in Python (not names/strings). JSON in this spec uses placeholders only.
-
-If footer_config is omitted, a minimal footer with centered page numbers ("Page {n} of {total}") is injected automatically for PDF.
-
-2) Deterministic Behavior
-
-Render order equals the order of items in report_sections.
-
-Same template works for PDF and DOCX (renderer switch only).
-
-table_grouped.clean_empty_cols=True cleans per group.
-
-PDF page numbers use a two-pass build for accurate totals.
-
-Footer uses three zones (left/center/right); if page numbers occupy a zone, text in that zone is ignored.
-
-Color precedence: section.colors ▶ report colors (colors) ▶ module defaults (report_colors).
-
-2.1 Smart Pagination (PDF)
-
-Titles (and their immediate content) avoid orphaning via a conditional page-break heuristic (~2″ threshold).
-
-2.2 SVG Background Layer (PDF-only) — NEW
-
-Provide background_svg="path/to/file.svg" to render a vector background behind all content on every page. See full details in “SVG Background Layer Feature” at the end of this spec.
-
-3) Template Model (Discriminated Union)
-
-A template is an array of Section objects. type selects the shape.
-
-{
-  "type": "array",
-  "items": { "$ref": "#/definitions/Section" },
-  "definitions": {
-    "Section": { "oneOf": [
-      { "$ref": "#/definitions/TitleSection" },
-      { "$ref": "#/definitions/TextSection" },
-      { "$ref": "#/definitions/TableSection" },
-      { "$ref": "#/definitions/GroupedTableSection" },
-      { "$ref": "#/definitions/ImageSection" }
-    ]},
-
-    "Common": {
-      "type": "object",
-      "properties": {
-        "title": {"type":"string"},
-        "subtitle": {"type":"string"},
-        "colors": {"$ref": "#/definitions/Colors"}
+# 2) Template (ordered sections)
+template = [
+    {"type":"title", "title":"Monthly Report", "subtitle":"October 2025"},
+    {"type":"text", "title":"Overview", "content":"This report summarises key metrics."},
+    {
+      "type":"table", "title":"Line Items", "df": df,
+      "column_formats": {
+        "Qty":   {"type":"number", "decimal_places":0},
+        "Price": {"type":"currency", "currency_symbol":"$","decimal_places":2}
       },
-      "additionalProperties": true
-    },
-
-    "TitleSection": { "allOf": [ {"$ref":"#/definitions/Common"}, {
-      "type":"object", "required":["type","title"],
-      "properties": {
-        "type": {"const":"title"},
-        "separator_color": {"type":"string"},
-        "subtitle_color": {"type":"string"}
-      }
-    }]},
-
-    "TextSection": { "allOf": [ {"$ref":"#/definitions/Common"}, {
-      "type":"object", "required":["type","content"],
-      "properties": {
-        "type": {"const":"text"},
-        "content": {"type":"string"}
-      }
-    }]},
-
-    "TableSection": { "allOf": [ {"$ref":"#/definitions/Common"}, {
-      "type":"object", "required":["type","df"],
-      "properties": {
-        "type": {"const":"table"},
-        "df": {"type":"string", "description":"PLACEHOLDER_NAME_ONLY (pass actual DataFrame at runtime)"},
-        "drop_columns": {"type":"array","items":{"type":"string"}},
-        "clean_empty_cols": {"type":"boolean"},
-        "clean_empty_rows": {"type":"boolean"},
-        "title_suffix_from_column": {"type":"string"},
-        "column_widths": {"type":"array","items":{"type":"number"}},
-        "formatting_rules": {"$ref":"#/definitions/FormattingRules"},
-        "column_formats": {"$ref":"#/definitions/ColumnFormats"},
-        "cell_formats": {"$ref":"#/definitions/CellFormats"}
-      }
-    }]},
-
-    "GroupedTableSection": { "allOf": [ {"$ref":"#/definitions/Common"}, {
-      "type":"object", "required":["type","df","groupby"],
-      "properties": {
-        "type": {"const":"table_grouped"},
-        "df": {"type":"string"},
-        "groupby": {"type":"string"},
-        "category_order": {"type":"array","items":{"type":"string"}},
-        "drop_columns": {"type":"array","items":{"type":"string"}},
-        "clean_empty_cols": {"type":"boolean"},
-        "clean_empty_rows": {"type":"boolean"},
-        "formatting_rules": {"$ref":"#/definitions/FormattingRules"},
-        "column_formats": {"$ref":"#/definitions/ColumnFormats"},
-        "cell_formats": {"$ref":"#/definitions/CellFormats"}
-      }
-    }]},
-
-    "ImageSection": { "allOf": [ {"$ref":"#/definitions/Common"}, {
-      "type":"object", "required":["type","image_path"],
-      "properties": {
-        "type": {"const":"image"},
-        "image_path": {"type":"string"},
-        "caption": {"type":"string"},
-        "width": {"type":"number"}
-      }
-    }]},
-
-    "Colors": {
-      "type":"object",
-      "properties": {
-        "header_bg": {"type":"string"},
-        "header_text": {"type":"string"},
-        "row_alt": {"type":"string"},
-        "row_normal": {"type":"string"},
-        "separator": {"type":"string"},
-        "subtitle": {"type":"string"},
-        "section_subtitle": {"type":"string"}
-      },
-      "additionalProperties": false
+      "formatting_rules": [{
+        "scope":"cell","target_column":"Status",
+        "condition":{"type":"color_scale","scale_type":"categorical",
+                     "color_map":{"Active":"#D1F7C4","Pending":"#FFE8A3"}},
+        "style":{"bg_color":"#FFFFFF","bold":False}
+      }],
+      "clean_empty_cols": True, "clean_empty_rows": True
     }
+]
+
+# 3) Generate (PDF)
+path = generate_report(template, output_filename="report.pdf", format="pdf")
+print(path)
+```
+
+**Defaults to remember**
+
+* Page: US Letter (612×792 pt).
+* Colors cascade: `section.colors` → `colors` param → `theme.report_colors`.
+* PDF always has page numbers (your footer or an auto default).
+* SVG background: `background_svg="path/to/bg.svg"` (PDF-only).
+
+---
+
+## 😵 Common Parameter Confusion Matrix (NOT THIS → USE THIS)
+
+| Confusion           | ❌ NOT THIS                                 | ✅ USE THIS                               | Why                                                                       |
+| ------------------- | ------------------------------------------ | ---------------------------------------- | ------------------------------------------------------------------------- |
+| DataFrames          | `"df": "my_df_name"`                       | `"df": actual_pandas_dataframe`          | Code expects a real DataFrame object, not a string.                       |
+| Format switch       | `"format": "PDF"`                          | `"format": "pdf"` (lowercase)            | The switch compares lowercase strings.                                    |
+| Column widths       | Raw inches or points                       | **Fractions** that sum ≈ `1.0`           | Current code supports fractional widths only (scaled to available width). |
+| Text color in rules | `"style": {"text_color":"#000"}`           | Omit; only `bg_color` + `bold` supported | Text color isn’t implemented in rules.                                    |
+| Date rule name      | `"type":"date"`                            | `"type":"date_compare"`                  | Implementation uses `date_compare` (& `date_compare_column`).             |
+| Date vs Date Column | `"type":"date"` when comparing two columns | `"type":"date_compare_column"`           | Column vs column needs the dedicated rule.                                |
+| Title suffix source | Expect suffix after drops/cleans           | Suffix comes from **original df**        | Current code reads from original, pre-clean/drop.                         |
+| DOCX parity         | Expect PDF features in DOCX                | Use DOCX only for basic export           | DOCX omits header/footer, rules, SVG, widths.                             |
+| Links in PDF        | Raw URLs                                   | `<link href="...">text</link>`           | ReportLab hyperlinks require `<link>` tags in text/cells.                 |
+
+---
+
+## 🧩 Section Schemas (with inline examples)
+
+> Shapes are illustrative. At runtime pass **actual** DataFrames and Python dicts.
+
+### TitleSection
+
+**Shape**
+
+```json
+{
+  "type":"title",
+  "title":"string",
+  "subtitle":"string?",
+  "separator_color":"#RRGGBB?",
+  "subtitle_color":"#RRGGBB?",
+  "colors": {"header_bg":"#..","header_text":"#..","row_alt":"#..","row_normal":"#..","separator":"#..","subtitle":"#..","section_subtitle":"#.."}?
+}
+```
+
+**Example**
+
+```python
+{"type":"title","title":"Estate Dashboard","subtitle":"October 2025","separator_color":"#FF8C00"}
+```
+
+---
+
+### TextSection
+
+**Shape**
+
+```json
+{
+  "type":"text",
+  "title":"string?",
+  "subtitle":"string?",
+  "content":"string",
+  "style":"normal|bold|italic",
+  "alignment":"left|center|right",
+  "font_size": number,
+  "colors": Colors?
+}
+```
+
+**Example**
+
+```python
+{"type":"text","title":"Notes","content":"Visit <link href=\"https://example.com\" color=\"blue\">portal</link> for details."}
+```
+
+---
+
+### TableSection
+
+**Shape**
+
+```json
+{
+  "type":"table",
+  "title":"string?",
+  "subtitle":"string?",
+  "df": "PLACEHOLDER",
+  "drop_columns": ["ColA","ColB"]?,
+  "clean_empty_cols": true?,
+  "clean_empty_rows": true?,
+  "title_suffix_from_column": "ColName"?,   
+  "column_widths": [0.25,0.5,0.25]?,        
+  "formatting_rules": [ Rule ]?,            
+  "column_formats":  ColumnFormats?,
+  "cell_formats":    CellFormats?,
+  "colors": Colors?
+}
+```
+
+**Example**
+
+```python
+{
+  "type":"table","title":"Contracts","df": df_contracts,
+  "title_suffix_from_column":"Month",
+  "drop_columns":["InternalID"],
+  "clean_empty_cols":True,"clean_empty_rows":True,
+  "column_formats":{
+    "Amount":{"type":"currency","currency_symbol":"$","decimal_places":2,"thousands_separator":True},
+    "Date":{"type":"date","format":"YYYY-MM-DD"}
   }
 }
+```
 
+---
 
-Concrete section shapes (Python)
+### GroupedTableSection
 
-Title: {'type': 'title', 'title': str, 'subtitle'?: str, 'separator_color'?: str, 'subtitle_color'?: str, 'colors'?: Colors}
+**Shape**
 
-Text: {'type': 'text', 'content': str, 'title'?: str, 'subtitle'?: str, 'colors'?: Colors}
-
-Table: {'type': 'table', 'df': DataFrame, 'title'?: str, 'subtitle'?: str, 'drop_columns'?: [str], 'clean_empty_cols'?: bool, 'clean_empty_rows'?: bool, 'title_suffix_from_column'?: str, 'column_widths'?: [float], 'formatting_rules'?: [Rule], 'column_formats'?: ColumnFormats, 'cell_formats'?: CellFormats, 'colors'?: Colors}
-
-Grouped Table: {'type': 'table_grouped', 'df': DataFrame, 'groupby': str, 'title'?: str, 'subtitle'?: str, 'category_order'?: [str], 'drop_columns'?: [str], 'clean_empty_cols'?: bool, 'clean_empty_rows'?: bool, 'formatting_rules'?: [Rule], 'column_formats'?: ColumnFormats, 'cell_formats'?: CellFormats, 'colors'?: Colors}
-
-Image: {'type': 'image', 'image_path': str, 'title'?: str, 'subtitle'?: str, 'caption'?: str, 'width'?: float, 'colors'?: Colors}
-
-4) Colors (Three-Level Cascade)
-4.1 Precedence (highest → lowest)
-
-section.colors → colors (API param) → report_colors (module defaults, from reportlabcustom.theme)
-
-4.2 Schema: Colors
-
-Keys (recommended all 7): header_bg, header_text, row_alt, row_normal, separator, subtitle, section_subtitle.
-
-Values: hex strings #RRGGBB.
-
-Partial dicts allowed; missing keys fall back to lower levels.
-
-4.3 Module Defaults
-# reportlabcustom/theme.py
-report_colors = {
-  'header_bg': '#FF8C00', 'header_text': '#FFFFFF',
-  'row_alt': '#FFE5CC',   'row_normal': '#FFFFFF',
-  'separator': '#FF8C00', 'subtitle': '#666666', 'section_subtitle': '#888888',
+```json
+{
+  "type":"table_grouped",
+  "title":"string?",
+  "subtitle":"string?",
+  "df":"PLACEHOLDER",
+  "groupby":"CategoryCol",
+  "category_order":["A","B","C"]?,
+  "drop_columns":["ColA"]?,
+  "clean_empty_cols": true?,
+  "clean_empty_rows": true?,
+  "formatting_rules":[ Rule ]?,
+  "column_formats": ColumnFormats?,
+  "cell_formats":   CellFormats?,
+  "colors": Colors?
 }
+```
 
-5) Conditional & Value Formatting (PDF)
+**Example**
 
-All condition types support both scope='row' and scope='cell'.
-Implemented in reportlabcustom.utils.evaluate_formatting_rules.
+```python
+{
+  "type":"table_grouped","title":"Tickets by Status","df": df_tickets,"groupby":"Status",
+  "category_order":["Open","Work In Progress","Resolved"],
+  "clean_empty_cols":True,
+  "formatting_rules":[
+    {"scope":"cell","target_column":"SLA_Days",
+     "condition":{"type":"numeric","operator":">","value":7},
+     "style":{"bg_color":"#FFD6D6","bold":True}}
+  ]
+}
+```
 
-5.1 FormattingRules (complete schema)
+---
 
-(unchanged from v2.3; see your previous block — it remains valid)
+### ImageSection
 
-Notes
+**Shape**
 
-Supported style properties are only: bg_color (hex) and bold (boolean). Text color is not supported.
+```json
+{
+  "type":"image",
+  "title":"string?",
+  "subtitle":"string?",
+  "image_path":"path/to/img.png",
+  "caption":"string?",
+  "width": number,  
+  "colors": Colors?
+}
+```
 
-Rule order matters; later rules can override earlier ones. Cell scope overrides row scope at the same cell.
+**Example**
 
-5.2 ColumnFormats & CellFormats
+```python
+{"type":"image","title":"Occupancy Map","image_path":"assets/occupancy.png","caption":"As of Oct 31","width":6}
+```
 
-(schema unchanged; same as v2.3)
+---
 
-5.3 Helper Locations
+## 🧪 Formatting Rules Cookbook (PDF)
 
-format_value, prepare_dataframe, evaluate_formatting_rules live in reportlabcustom.utils.
+> Styles support only `bg_color` and `bold`. Text color is not supported.
 
-PDF renderer in reportlabcustom.pdf consumes these helpers.
+1. **Cell equals**
 
-6) PDF Layout: Footer, Header, Page Numbers
-6.1 FooterConfig (three zones; page numbers mandatory somewhere)
+```python
+{"scope":"cell","target_column":"Status",
+ "condition":{"type":"equals","value":"Critical"},
+ "style":{"bg_color":"#FFCCCC","bold":True}}
+```
 
-(schema unchanged; same as v2.3)
+2. **Cell contains (case-insensitive)**
 
-6.2 HeaderConfig
+```python
+{"scope":"cell","target_column":"Notes",
+ "condition":{"type":"contains","value":"overdue"},
+ "style":{"bg_color":"#FFF0B3","bold":False}}
+```
 
-(schema unchanged; same as v2.3)
+3. **Cell numeric threshold**
 
-6.3 Page Numbers (defaults)
+```python
+{"scope":"cell","target_column":"Amount",
+ "condition":{"type":"numeric","operator":">=","value":10000},
+ "style":{"bg_color":"#E6F4EA","bold":True}}
+```
 
-Default footer (if none provided): centered "Page {n} of {total}", Helvetica 9pt.
+4. **Row equals**
 
-Two-pass PDF build ensures accurate {total}.
+```python
+{"scope":"row","target_column":"Severity",
+ "condition":{"type":"equals","value":"High"},
+ "style":{"bg_color":"#FFE5CC","bold":False}}
+```
 
-7) Data Preparation & Limits
+5. **Row date vs today (SG time)**
 
-Use prepare_dataframe(df) to normalize datetimes (YYYY-MM-DD) with conservative parsing for object columns (parse only if ≥80% look like dates and contain - / :).
+```python
+{"scope":"row","target_column":"DueDate",
+ "condition":{"type":"date_compare","operator":"<","compare_to":"today"},
+ "style":{"bg_color":"#FFD6D6","bold":True}}
+```
 
-For PDF tables, prefer ≤ 500 characters per cell to avoid layout issues.
+6. **Row date vs fixed date**
 
-Ensure image_path exists and is accessible at render time.
+```python
+{"scope":"row","target_column":"CreatedAt",
+ "condition":{"type":"date_compare","operator":">=","value":"2025-10-01"},
+ "style":{"bg_color":"#E8F0FE","bold":False}}
+```
 
-8) Minimal Usage Examples
-8.1 Defaults
+7. **Cell date vs other column**
+
+```python
+{"scope":"cell","target_column":"ClosedAt",
+ "condition":{"type":"date_compare_column","operator":">","compare_column":"OpenedAt"},
+ "style":{"bg_color":"#FFF5CC","bold":False}}
+```
+
+8. **Categorical color scale (cell)**
+
+```python
+{"scope":"cell","target_column":"Status",
+ "condition":{"type":"color_scale","scale_type":"categorical",
+              "color_map":{"Active":"#D1F7C4","Pending":"#FFE8A3","Inactive":"#FFCCCC"}},
+ "style":{"bg_color":"#FFFFFF","bold":False}}
+```
+
+9. **Numeric color scale (auto min/mid/max)**
+
+```python
+{"scope":"cell","target_column":"Utilization",
+ "condition":{"type":"color_scale","scale_type":"numeric","mode":"auto",
+              "colors":["#D1F7C4","#FFE8A3","#FFCCCC"]},
+ "style":{"bg_color":"#FFFFFF","bold":False}}
+```
+
+10. **Date color scale (manual anchors)**
+
+```python
+{"scope":"cell","target_column":"InspectionDate",
+ "condition":{"type":"color_scale","scale_type":"date","mode":"manual",
+              "colors":["#D1F7C4","#FFE8A3","#FFCCCC"],
+              "min":"2025-01-01","mid":"2025-06-01","max":"2025-12-31"},
+ "style":{"bg_color":"#FFFFFF","bold":False}}
+```
+
+*Precedence:* later rules override earlier ones; cell overrides row at the same cell.
+
+---
+
+## 🧯 Error Translation Guide (“When you see this…”)
+
+| Message / Symptom                                                | Meaning (Code Path)                                                                | Fix                                                                   |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `⚠️  ... groups not in category_order (appending at end): [...]` | Data has categories missing from `category_order`.                                 | Add them or accept appended order.                                    |
+| `⚠️  ... date_compare ... not found / not parseable`             | `compare_to` references global (`start_date`/`end_date`) missing or unparsable.    | Define those globals in runtime or use `value:"YYYY-MM-DD"`.          |
+| `... date comparison: N invalid dates`                           | Target column had unparseable dates.                                               | Normalize upstream or adjust rule/format.                             |
+| `... categorical color scale: N unmapped values (...)`           | Some values missing in `color_map`.                                                | Add entries or accept no color for unmapped.                          |
+| Image doesn’t render, no crash                                   | `image_path` missing/invalid → section skipped.                                    | Ensure file exists at runtime.                                        |
+| Title suffix missing                                             | `title_suffix_from_column` reads from **original df**; column may not exist there. | Ensure column exists pre-drop/clean (or remove the suffix).           |
+| Column widths ignored                                            | Fractions didn’t sum ≈ 1.0 or length mismatch.                                     | Provide fractional list of same length as visible columns; sum ≈ 1.0. |
+
+---
+
+## 🖋️ Type Hints (concise)
+
+```python
+from typing import Any, Dict, List, Optional, Tuple, Union
+import pandas as pd
+
+Colors = Dict[str, str]
+
+Rule = Dict[str, Any]
+ColumnFormat = Dict[str, Any]
+CellFormat = Dict[str, Any]
+ColumnFormats = Dict[str, ColumnFormat]
+CellFormats = Dict[Union[Tuple[int, str], str], CellFormat]
+
+TitleSection = Dict[str, Any]         # {"type":"title", ...}
+TextSection  = Dict[str, Any]         # {"type":"text", ...}
+TableSection = Dict[str, Any]         # {"type":"table","df":pd.DataFrame, ...}
+GroupedTableSection = Dict[str, Any]  # {"type":"table_grouped","df":pd.DataFrame,"groupby":str, ...}
+ImageSection = Dict[str, Any]         # {"type":"image", ...}
+
+Section = Union[TitleSection, TextSection, TableSection, GroupedTableSection, ImageSection]
+
+def generate_report(
+    report_sections: List[Section],
+    format: str = "pdf",
+    output_filename: str = "report.pdf",
+    colors: Optional[Colors] = None,
+    header_config: Optional[Dict[str, Any]] = None,
+    footer_config: Optional[Dict[str, Any]] = None,
+    background_svg: Optional[str] = None
+) -> str: ...
+```
+
+---
+
+## 🧭 LLM “How-to-Choose” Decision Trees (text)
+
+**Table vs Grouped Table**
+
+* Need per-category blocks (each with its own header)? → **Grouped**
+* Single grid, no per-group headers → **Table**
+
+**Rules or no rules**
+
+* Visual cues needed (overdue, thresholds, statuses)? → add **`formatting_rules`** (PDF only)
+* No highlights needed → omit for speed
+
+**Cleaning**
+
+* Many blank columns/rows? → `clean_empty_cols/rows: True`
+* Keep structure identical to source? → leave them False
+
+**Column widths**
+
+* You want control? → provide **fractions that sum ≈ 1.0** (same length as visible columns)
+* You don’t care? → omit → equal widths
+
+**Title suffix**
+
+* Want “(Oct 2025)” after the title? → `title_suffix_from_column:"Month"`
+  *(Reads from **original df**; there is no toggle.)*
+
+**Links**
+
+* Need clickable links in PDF? → Use `<link href="...">Text</link>` in any text/cell
+
+**DOCX**
+
+* Need headers/footers, rules, SVG? → **Use PDF**. DOCX is basic export only.
+
+---
+
+## 🧰 What Works Where (Parameter-Support Matrix)
+
+| Parameter / Feature                 | PDF Table |                    PDF Grouped |               DOCX Table | Notes                                                |
+| ----------------------------------- | --------: | -----------------------------: | -----------------------: | ---------------------------------------------------- |
+| `title`, `subtitle`                 |         ✓ | ✓ (section + per-group header) |                        ✓ |                                                      |
+| `colors` cascade                    |         ✓ |                              ✓ | ✓ (header bg + alt rows) | Same keys; DOCX applies a subset visually            |
+| `drop_columns`                      |         ✓ |                  ✓ (per group) |                        ✓ |                                                      |
+| `clean_empty_cols/rows`             |         ✓ |                  ✓ (per group) |                        ✓ |                                                      |
+| `title_suffix_from_column`          |         ✓ |                 (section only) |                        ✓ | Reads from **original df**                           |
+| `column_widths` (fractions sum≈1.0) |         ✓ |                              ✓ |                        – | Invalid → equal widths                               |
+| `formatting_rules`                  |         ✓ |                              ✓ |                        – | PDF only                                             |
+| `column_formats` / `cell_formats`   |         ✓ |                              ✓ |                       ✓* | DOCX uses `format_value` only; no rule visuals/align |
+| Header/Footer                       |         ✓ |                              ✓ |                        – | 3-zone footer; page totals; header line/logo/text    |
+| SVG background                      |         ✓ |                              ✓ |                        – | All pages; behind content                            |
+| Hyperlinks (`<link>`)               |         ✓ |                              ✓ |                        – | PDF only                                             |
+
+* DOCX: number/date/na formatting appears (via `format_value`), but **align** keys are not applied.
+
+---
+
+## ⚠️ Gotchas for Agents (LLM Watch-Outs)
+
+* **DF objects only**: `"df"` must be a **pandas.DataFrame**, not the name of one.
+* **Column widths**: only **fractions** are supported; length must match visible columns; sum ≈ 1.0.
+* **No text color in rules**: only `bg_color` + `bold`. (Do not invent `text_color`.)
+* **Title suffix source**: comes from the **original df** (pre-drop/clean). There’s no toggle.
+* **Percentage formatting**: uses value as given (`0.23 → "0.2%"`). Scale yourself if you want `23%`.
+* **Large cells**: keep content ≲ 500 chars to avoid layout issues.
+* **PDF-only features**: rules, header/footer, SVG, hyperlinks are **not** in DOCX.
+* **Date rules context**: `compare_to:"today"` is SG (UTC+8). `"start_date"/"end_date"` rely on globals if you’ve injected them.
+* **Category order**: missing categories are appended with a warning.
+
+---
+
+## 🧱 Complete Template Examples
+
+### Example 1 — Minimal KPI (PDF)
+
+```python
+import pandas as pd
 from reportlabcustom import generate_report
-path = generate_report(template, output_filename='report.pdf', format='pdf')
 
-8.2 Report Colors + Footer
-from reportlabcustom import generate_report, report_colors
+df = pd.DataFrame([
+  {"Metric":"Total SRs","Value":128},
+  {"Metric":"Resolved","Value":117},
+  {"Metric":"Avg Close (days)","Value":2.3},
+])
 
-blue = {
-  'header_bg':'#0066CC','header_text':'#FFFFFF',
-  'row_alt':'#E6F2FF','row_normal':'#FFFFFF',
-  'separator':'#0066CC','subtitle':'#1E90FF','section_subtitle':'#4169E1'
-}
-foot = { 'text_left': '© 2025 Ohmyhome', 'page_numbers': {'position':'center'} }
+template = [
+  {"type":"title","title":"Condo KPI Snapshot","subtitle":"October 2025"},
+  {"type":"text","title":"Summary","content":"Performance remains stable month-on-month."},
+  {"type":"table","title":"Key Metrics","df":df,
+   "column_formats":{"Value":{"type":"number","decimal_places":1,"thousands_separator":True}},
+   "clean_empty_cols":True,"clean_empty_rows":True}
+]
 
-path = generate_report(
-  template, output_filename='report.pdf', format='pdf',
-  colors=blue, footer_config=foot
-)
+generate_report(template, format="pdf", output_filename="kpi.pdf")
+```
 
-8.3 Conditional Formatting (Categorical map)
-template = [{
-  'type':'table', 'df': df,
-  'formatting_rules': [{
-    'scope':'cell', 'target_column':'Status',
-    'condition': { 'type':'color_scale', 'scale_type':'categorical', 'color_map': {
-      'Active':'#90EE90', 'Pending':'#FFD700', 'Inactive':'#FFB6C1'
-    }},
-    'style': { 'bg_color':'#FFFFFF', 'bold': False }
-  }]
-}]
-path = generate_report(template, output_filename='status.pdf', format='pdf')
+---
 
-8.4 Header + Footer + Colors
-head = { 'logo_path':'logo.png','logo_width':1.2,'logo_height':0.5,'logo_position':'left',
-         'text':'Monthly Report','text_position':'right','draw_line':True }
-foot = { 'text_left':'© 2025 Ohmyhome','page_numbers':{'position':'center','format':'{n}/{total}'},
-         'text_right':'October 2025','draw_line':True }
+### Example 2 — Grouped Tickets + Rules + Header/Footer + SVG (PDF)
 
-path = generate_report(
-  template, output_filename='report.pdf', format='pdf',
-  colors=blue, header_config=head, footer_config=foot
-)
+```python
+import pandas as pd
+from reportlabcustom import generate_report
 
-8.5 PDF with SVG Background — NEW
-path = generate_report(
-  report_sections=template,
-  output_filename="monthly_report.pdf",
-  format="pdf",
-  header_config={'text':'Monthly Report', 'draw_line': True},
-  footer_config={'page_numbers': {'position':'center'}},
-  background_svg="assets/letterhead_background.svg"
-)
+df = pd.DataFrame([
+  {"Status":"Open","SLA_Days":3,"Title":"Gate light issue","OpenedAt":"2025-10-29","ClosedAt":None},
+  {"Status":"Work In Progress","SLA_Days":9,"Title":"Lift noise","OpenedAt":"2025-10-20","ClosedAt":None},
+  {"Status":"Resolved","SLA_Days":2,"Title":"Pool pump","OpenedAt":"2025-10-10","ClosedAt":"2025-10-12"},
+])
 
-9) Feature Matrix
-Capability	Tables	Grouped Tables	PDF	DOCX
-Conditional formatting (contains/equals/numeric/date/date_column/color_scale)	✓	✓	✓	–
-Number/Date formatting	✓	✓	✓	–
-Three-zone footer & header	–	–	✓	–
-SVG background (all pages, behind content)	–	–	✓	–
-10) SVG Background Layer Feature (Full Details)
-Overview
+template = [
+  {"type":"title","title":"Service Requests","subtitle":"October 2025"},
+  {"type":"table_grouped","title":"By Status","subtitle":"SLA highlights","df":df,"groupby":"Status",
+   "category_order":["Open","Work In Progress","Resolved"],
+   "formatting_rules":[
+     {"scope":"cell","target_column":"SLA_Days",
+      "condition":{"type":"numeric","operator":">","value":7},
+      "style":{"bg_color":"#FFD6D6","bold":True}},
+     {"scope":"cell","target_column":"Title",
+      "condition":{"type":"contains","value":"lift"},
+      "style":{"bg_color":"#FFF0B3","bold":False}}
+   ],
+   "column_formats":{
+     "SLA_Days":{"type":"number","decimal_places":0},
+     "OpenedAt":{"type":"date","format":"YYYY-MM-DD"},
+     "ClosedAt":{"type":"date","format":"YYYY-MM-DD"}
+   },
+   "clean_empty_cols":True,"clean_empty_rows":True
+  }
+]
 
-The system supports vector SVG backgrounds that render on every PDF page, behind all content (headers, footers, tables, text, images).
+head = {"text":"Monthly Report","text_position":"right","draw_line":True}
+foot = {"text_left":"© 2025 Ohmyhome","page_numbers":{"position":"center"},"draw_line":True}
 
-Usage (recap)
 generate_report(
-    report_sections=content,
-    output_filename="report.pdf",
-    format="pdf",
-    header_config={...},
-    footer_config={...},
-    background_svg="path/to/background.svg"   # NEW
+  template, format="pdf", output_filename="tickets.pdf",
+  header_config=head, footer_config=foot, background_svg="assets/letterhead_background.svg"
 )
+```
 
-Parameter: background_svg
+---
 
-Type: str | None — path to an SVG file
+### Example 3 — Links, Money Formats, Alt Rows (PDF)
 
-Default: None (no background)
+```python
+import pandas as pd
+from reportlabcustom import generate_report
 
-PDF only: not supported in DOCX
+df = pd.DataFrame([
+  {"Vendor":"ACME","Contract":"<link href=\"https://example.com/c/1001\" color=\"blue\">#1001</link>","Amount":12345.6,"Date":"2025-10-03","Status":"Active"},
+  {"Vendor":"Bolt","Contract":"<link href=\"https://example.com/c/1002\" color=\"blue\">#1002</link>","Amount":980.0,"Date":"2025-10-11","Status":"Pending"}
+])
 
-Sizing: auto-scaled to letter (8.5″×11″, 612×792 pt), aspect ratio preserved & centered
+template = [
+  {"type":"title","title":"Contracts Summary","subtitle":"As at Oct 31, 2025"},
+  {"type":"table","title":"Active Contracts","df":df,
+   "column_formats":{
+     "Amount":{"type":"currency","currency_symbol":"$","decimal_places":2,"thousands_separator":True},
+     "Date":{"type":"date","format":"YYYY-MM-DD"}
+   },
+   "formatting_rules":[{
+     "scope":"cell","target_column":"Status",
+     "condition":{"type":"color_scale","scale_type":"categorical",
+                  "color_map":{"Active":"#D1F7C4","Pending":"#FFE8A3"}},
+     "style":{"bg_color":"#FFFFFF","bold":False}
+   }],
+   "clean_empty_cols":True,"clean_empty_rows":True
+  }
+]
 
-SVG File Requirements
+generate_report(template, format="pdf", output_filename="contracts.pdf")
+```
 
-Recommended
+---
 
-Dimensions: 612×792 pt (8.5″×11″ at 72 DPI)
+## 📏 Core Behavior & Defaults
 
-SVG 1.1, simple shapes/gradients/opacity; <500 KB preferred
+* **Deterministic order:** sections render in the array’s order.
+* **Two-pass PDF build:** proper `{n}/{total}` page numbers in footer.
+* **Header/Footer (PDF):** three zones; if page numbers occupy a zone, that zone’s text is ignored.
+* **Smart orphan control:** ~2″ threshold avoids orphaned titles/subtitles/group headers.
+* **Grouped tables:** missing categories appended with a warning; no subtotals.
+* **Title suffix:** `title_suffix_from_column` reads from **original df** (pre-drop/clean). No toggle exists.
+* **Links (PDF):** use `<link href="..." color="blue">Text</link>` inside text or cells.
+* **DOCX:** basic renderer (no header/footer, no rules, no SVG, no column widths enforcement). Formats via `format_value` only.
 
-Supported
+### Theme defaults (`theme.py`)
 
-Rects/circles/paths/lines, solid fills/strokes, gradients, opacity, text
+```python
+report_colors = {
+  'header_bg':'#FF8C00','header_text':'#FFFFFF',
+  'row_alt':'#FFE5CC','row_normal':'#FFFFFF',
+  'separator':'#FF8C00','subtitle':'#666666','section_subtitle':'#888888',
+}
+```
 
-Limitations
+### SVG Background (PDF)
 
-Avoid embedded fonts / external references / complex filters; very large files (>1 MB) may slow generation
+* `background_svg="path/to/file.svg"`
+* Loads once, scaled to letter, aspect preserved & centered, drawn **behind** content/header/footer.
+* Invalid/missing file → warning, continue without background.
 
-Behavior & Rendering Order
+---
 
-Background SVG
+**End of SPEC.md (v2.6)**
 
-Report content (title, text, tables, images)
+---
 
-Header
+## ➕ Addenda (v2.6)
 
-Footer
+### 🖇️ Type Hints — Autocomplete‑Friendly Stubs (.pyi‑style)
 
-Error Handling
+> Drop this block into `reportlabcustom/_types.pyi` (or keep in the SPEC) to guide LLMs/IDEs.
 
-File not found / invalid / parse errors → warning printed; report renders without background.
+```python
+from typing import Any, Dict, List, Optional, Tuple, Union, Literal, TypedDict, NotRequired
+import pandas as pd
 
-Performance
+# ---------- Visual theme ----------
+class Colors(TypedDict, total=False):
+    header_bg: str
+    header_text: str
+    row_alt: str
+    row_normal: str
+    separator: str
+    subtitle: str
+    section_subtitle: str
 
-SVG is loaded once; drawing is re-used on every page.
+# ---------- Header / Footer (PDF) ----------
+class PageNumbers(TypedDict, total=False):
+    position: Literal['left','center','right']
+    format: NotRequired[str]
 
-11) Dependencies
+class FooterConfig(TypedDict, total=False):
+    text_left: NotRequired[str]
+    text_center: NotRequired[str]
+    text_right: NotRequired[str]
+    page_numbers: NotRequired[PageNumbers]
+    font_size: NotRequired[int]
+    text_color: NotRequired[str]
+    draw_line: NotRequired[bool]
+    line_color: NotRequired[str]
+    height: NotRequired[float]  # inches
 
-Base (in pyproject.toml):
+class HeaderConfig(TypedDict, total=False):
+    text: NotRequired[str]
+    text_position: NotRequired[Literal['left','center','right']]
+    font_size: NotRequired[int]
+    text_color: NotRequired[str]
+    logo_path: NotRequired[str]
+    logo_width: NotRequired[float]  # inches
+    logo_height: NotRequired[float] # inches
+    logo_position: NotRequired[Literal['left','center','right']]
+    draw_line: NotRequired[bool]
+    line_color: NotRequired[str]
+    height: NotRequired[float]      # inches
 
-pandas, requests (if you use it)
+# ---------- Formatting ----------
+class Style(TypedDict, total=False):
+    bg_color: str
+    bold: bool
 
-PDF:
+class CondEquals(TypedDict):
+    type: Literal['equals']
+    value: Any
 
-reportlab, svglib, pillow
+class CondContains(TypedDict):
+    type: Literal['contains']
+    value: str
 
-DOCX:
+class CondNumeric(TypedDict):
+    type: Literal['numeric']
+    operator: Literal['>','>=','<','<=','==','!=']
+    value: float
 
-python-docx
+class CondDateCompare(TypedDict, total=False):
+    type: Literal['date_compare']
+    operator: Literal['>','>=','<','<=','==']
+    compare_to: NotRequired[Literal['today','start_date','end_date']]
+    value: NotRequired[str]  # 'YYYY-MM-DD'
 
-If you’re using optional extras, document install as:
+class CondDateCompareColumn(TypedDict):
+    type: Literal['date_compare_column']
+    operator: Literal['>','>=','<','<=','==']
+    compare_column: str
 
-pip install "reportlabcustom[pdf,docx]"
+class CondColorScaleCategorical(TypedDict):
+    type: Literal['color_scale']
+    scale_type: Literal['categorical']
+    color_map: Dict[str, str]
 
-12) Versioning & API Surface
+class CondColorScaleNumeric(TypedDict, total=False):
+    type: Literal['color_scale']
+    scale_type: Literal['numeric']
+    mode: Literal['auto','manual']
+    colors: List[str]  # exactly 3
+    min: NotRequired[float]
+    mid: NotRequired[float]
+    max: NotRequired[float]
 
-Single public entry point: reportlabcustom.generate_report(...)
+class CondColorScaleDate(TypedDict, total=False):
+    type: Literal['color_scale']
+    scale_type: Literal['date']
+    mode: Literal['auto','manual']
+    colors: List[str]  # exactly 3
+    min: NotRequired[str]
+    mid: NotRequired[str]
+    max: NotRequired[str]
 
-You chose no version file. The spec label here is informational only: v2.4.2025-11-10.
+Condition = Union[
+    CondEquals, CondContains, CondNumeric,
+    CondDateCompare, CondDateCompareColumn,
+    CondColorScaleCategorical, CondColorScaleNumeric, CondColorScaleDate
+]
+
+class Rule(TypedDict, total=False):
+    scope: Literal['row','cell']
+    target_column: str
+    condition: Condition
+    style: Style
+
+class ColumnFormat(TypedDict, total=False):
+    type: Literal['number','currency','percentage','date']
+    decimal_places: NotRequired[int]
+    thousands_separator: NotRequired[bool]
+    currency_symbol: NotRequired[str]
+    format: NotRequired[str]  # for dates
+    align: NotRequired[Literal['left','center','right']]
+    na: NotRequired[str]
+
+ColumnFormats = Dict[str, ColumnFormat]
+# CellFormats are applied via (row_index, col_name) or direct mapping; kept flexible in code.
+CellFormats = Dict[Any, ColumnFormat]
+
+# ---------- Sections ----------
+class TitleSection(TypedDict, total=False):
+    type: Literal['title']
+    title: str
+    subtitle: NotRequired[str]
+    separator_color: NotRequired[str]
+    subtitle_color: NotRequired[str]
+    colors: NotRequired[Colors]
+
+class TextSection(TypedDict, total=False):
+    type: Literal['text']
+    title: NotRequired[str]
+    subtitle: NotRequired[str]
+    content: str
+    style: NotRequired[Literal['normal','bold','italic']]
+    alignment: NotRequired[Literal['left','center','right']]
+    font_size: NotRequired[int]
+    colors: NotRequired[Colors]
+
+class TableSection(TypedDict, total=False):
+    type: Literal['table']
+    title: NotRequired[str]
+    subtitle: NotRequired[str]
+    df: pd.DataFrame
+    drop_columns: NotRequired[List[str]]
+    clean_empty_cols: NotRequired[bool]
+    clean_empty_rows: NotRequired[bool]
+    title_suffix_from_column: NotRequired[str]
+    column_widths: NotRequired[List[float]]  # fractions, sum≈1.0
+    formatting_rules: NotRequired[List[Rule]]
+    column_formats: NotRequired[ColumnFormats]
+    cell_formats: NotRequired[CellFormats]
+    colors: NotRequired[Colors]
+
+class GroupedTableSection(TypedDict, total=False):
+    type: Literal['table_grouped']
+    title: NotRequired[str]
+    subtitle: NotRequired[str]
+    df: pd.DataFrame
+    groupby: str
+    category_order: NotRequired[List[str]]
+    drop_columns: NotRequired[List[str]]
+    clean_empty_cols: NotRequired[bool]
+    clean_empty_rows: NotRequired[bool]
+    formatting_rules: NotRequired[List[Rule]]
+    column_formats: NotRequired[ColumnFormats]
+    cell_formats: NotRequired[CellFormats]
+    colors: NotRequired[Colors]
+
+class ImageSection(TypedDict, total=False):
+    type: Literal['image']
+    title: NotRequired[str]
+    subtitle: NotRequired[str]
+    image_path: str
+    caption: NotRequired[str]
+    width: NotRequired[float]  # inches
+    colors: NotRequired[Colors]
+
+Section = Union[TitleSection, TextSection, TableSection, GroupedTableSection, ImageSection]
+
+# ---------- Public API ----------
+
+def generate_report(
+    report_sections: List[Section],
+    format: Literal['pdf','docx'] = 'pdf',
+    output_filename: str = 'report.pdf',
+    colors: Optional[Colors] = None,
+    header_config: Optional[HeaderConfig] = None,
+    footer_config: Optional[FooterConfig] = None,
+    background_svg: Optional[str] = None
+) -> str: ...
+
+# ---------- Utils (signatures) ----------
+
+def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame: ...
+
+def format_value(value: Any, format_spec: Optional[ColumnFormat] = None) -> str: ...
+
+def evaluate_formatting_rules(df: pd.DataFrame, rules: List[Rule]) -> Dict[str, Any]: ...
+```
+
+---
+
+### 🧭 Decision Tree — Picking the Right Rule (textual flow)
+
+1. **What do you want to highlight?**
+
+   * Entire records → use `scope: "row"`
+   * Single cells → use `scope: "cell"`
+
+2. **What’s the data type?**
+
+   * Text keyword/pattern → `condition.type: "contains"` (case‑insensitive)
+   * Text exact value → `"equals"`
+   * Numbers (>, <, thresholds) → `"numeric"` with `operator` + `value`
+   * Single date vs **today/fixed date** → `"date_compare"`
+   * **Date vs date in another column** → `"date_compare_column"`
+   * Color by **category** → `"color_scale"` + `scale_type: "categorical"` + `color_map`
+   * Color by **magnitude (numbers)** → `"color_scale"` + `scale_type: "numeric"` (auto or manual anchors)
+   * Color by **recency/time** → `"color_scale"` + `scale_type: "date"` (auto or manual anchors)
+
+3. **What style to apply?**
+
+   * Background only: `style: {"bg_color":"#RRGGBB"}`
+   * Emphasis: add `"bold": true`
+   * *(Text color is not supported.)*
+
+4. **Multiple rules?**
+
+   * Order matters: later rules **override** earlier ones
+   * Cell‑scope overrides row‑scope for the same cell
+
+5. **Sanity checks**
+
+   * Target column exists?
+   * Date values parse? (use `prepare_dataframe` or a date format in `column_formats`)
+   * Categorical map covers the main values? (warnings show unmapped values)
+
+---
+
+### 🧹 Cleaning Flags — Before/After Example
+
+**Input DataFrame (`df`)**
+
+| idx | A    | B  | C  |
+| --: | :--- | :- | :- |
+|   0 | x    | '' | 1  |
+|   1 | ''   | '' | '' |
+|   2 | None | '' | 3  |
+|   3 | ''   | '' | '' |
+
+*(Empty string shown as `''`; `None` stands for missing/NaN.)*
+
+```python
+section = {
+  "type": "table",
+  "title": "Cleaning Demo",
+  "df": df,
+}
+```
+
+**Case A — `clean_empty_cols=True` (columns only)**
+
+* Drops any column that is entirely NA/`''`.
+* Here, **B** is all empty → dropped.
+
+**Rendered columns:** A, C
+
+**Case B — `clean_empty_rows=True` (rows only)**
+
+* Drops any row whose cells are all NA/`''`.
+* Here, rows **1** and **3** are fully empty → dropped.
+
+**Remaining rows:** idx 0 and 2
+
+**Case C — both flags True**
+
+* First apply column drop, then row drop on the remaining data.
+* Result: columns **A, C** with rows **0, 2**.
+
+**Notes**
+
+* Numeric zeros (`0`) are **kept** (non‑empty after `astype(str)`); only NA/`''` collapse.
+* Order of user‑provided `drop_columns` is respected **before** suffix/formatting.
+* `title_suffix_from_column` reads from the **original df** even if that column is later dropped.
+
+---
